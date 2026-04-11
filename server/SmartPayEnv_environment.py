@@ -34,11 +34,11 @@ GATEWAY_COST_FIXED = [0.10, 0.30, 0.50]   # Flat fee per tx
 GATEWAY_FEE_PCT    = [0.02, 0.025, 0.035] # % of amount
 
 # BIN Affinity: Multiplier for success_prob based on [GatewayIndex][BIN_Category]
-# Reflects a world where gateways have different bank-level strengths.
+# Values aligned with the agent's Knowledge-Rich Prompt in inference.py
 BIN_AFFINITY = [
-    [1.1, 1.1, 1.1, 0.8, 0.8, 0.7, 0.6, 0.5, 0.5, 0.5], # Gateway A (patchy)
-    [0.9, 1.0, 1.0, 1.0, 1.1, 1.1, 1.1, 0.9, 0.9, 0.9], # Gateway B (balanced)
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.1, 1.1, 1.2, 1.2, 1.2], # Gateway C (premium)
+    [0.95, 0.80, 0.70, 0.60, 0.50, 0.90, 0.75, 0.65, 0.55, 0.85], # Gateway 0
+    [0.60, 0.95, 0.80, 0.70, 0.60, 0.55, 0.90, 0.75, 0.65, 0.50], # Gateway 1
+    [0.50, 0.60, 0.95, 0.85, 0.75, 0.50, 0.60, 0.95, 0.85, 0.75]  # Gateway 2
 ]
 
 GATEWAY_RETRY_PENALTY = 0.2
@@ -50,14 +50,14 @@ DIFFICULTY_CONFIG = {
         "churn_rate":         0.05,
     },
     1: {   # medium
-        "fraud_base_rate":    0.06,
+        "fraud_base_rate":    0.15,
         "instability":        0.15,
-        "churn_rate":         0.10,
+        "churn_rate":         0.15,
     },
     2: {   # hard
-        "fraud_base_rate":    0.12,
+        "fraud_base_rate":    0.25,
         "instability":        0.30,
-        "churn_rate":         0.18,
+        "churn_rate":         0.25,
     },
 }
 
@@ -65,7 +65,10 @@ DIFFICULTY_CONFIG = {
 class State:
     episode_id: str
     step_count: int
-    chargeback_queue: list = field(default_factory=list) # List of (maturity_step, penalty_amount)
+    consecutive_failures: int = 0
+    fraud_wave_drift: float = 0.0
+    market_volatility: float = 0.0
+    chargeback_queue: list = field(default_factory=list)
 
 
 class _GatewayState:
@@ -129,61 +132,64 @@ class SmartpayenvEnvironment(Environment):
         ]
 
     def _generate_transaction(self) -> SmartpayenvObservation:
-        # 1. User Segments (Cohorts)
-        segment = int(self._rng.choice([0, 1, 2], p=[0.2, 0.6, 0.2])) # 0=New, 1=Existing, 2=Premium
+        # 1. Advanced Diurnal Cycle (UTC)
+        # Peak Fraud: 01:00 - 05:00. Peak Volume: 12:00 - 20:00
+        hour = int(self._state.step_count % 24)
+        is_night = (1 <= hour <= 5)
         
-        # Segment impacts
-        fraud_multiplier = {0: 2.5, 1: 1.0, 2: 0.2}[segment]
-        history_boost    = {0: -0.2, 1: 0.0, 2: 0.3}[segment]
+        # 2. User Segments (Cohorts)
+        segment = int(self._rng.choice([0, 1, 2], p=[0.25, 0.60, 0.15])) # 0=New, 1=Existing, 2=Premium
         
-        # User history
-        history_lo = max(0.1, 0.7 - self._difficulty * 0.25 + history_boost)
-        history_hi = max(0.3, 1.0 - self._difficulty * 0.20 + history_boost)
-        user_history_score = float(np.clip(self._rng.uniform(history_lo, history_hi), 0.1, 1.0))
+        # Segment behavioral traits
+        fraud_mult = {0: 1.8, 1: 1.0, 2: 0.3}[segment]
+        history_mu  = {0: 0.3, 1: 0.7, 2: 0.9}[segment]
+        
+        # 3. Correlated Merchant Categories (MCC)
+        mcc = int(self._rng.choice([0, 1, 2, 3, 4, 5], p=[0.3, 0.2, 0.1, 0.1, 0.1, 0.2]))
+        
+        # MCC-Amount Correlation
+        amount_mu = {0: 4.0, 1: 4.5, 2: 6.5, 3: 7.0, 4: 5.0, 5: 3.0}[mcc]
+        amount = float(self._rng.lognormal(mean=amount_mu, sigma=0.8))
+        
+        # 4. Statistical Fraud Model
+        wave_drift = self._state.fraud_wave_drift
+        category_risk = {0: 0.02, 1: 0.05, 2: 0.15, 3: 0.08, 4: 0.25, 5: 0.12}[mcc]
+        
+        base_risk = self._cfg["fraud_base_rate"] + wave_drift + category_risk
+        if is_night: base_risk += 0.25 # Night surge
+        
+        is_international = bool(self._rng.random() < (0.4 if mcc == 3 else 0.15))
+        device_type = int(self._rng.choice([0, 1, 2], p=[0.5, 0.4, 0.1])) # 0=Mobile, 1=Web, 2=Unknown
+        
+        final_risk = base_risk + (0.15 if is_international else 0.0)
+        final_risk += (0.2 if device_type == 2 else 0.0)
+        
+        fraud_risk_score = float(np.clip(final_risk * fraud_mult, 0.01, 0.99))
+        user_history_score = float(np.clip(self._rng.normal(history_mu, 0.15), 0.1, 1.0))
 
-        # Transaction context
-        merchant_category = int(self._rng.integers(0, 6))
-        device_type       = int(self._rng.choice([0, 1, 2], p=[0.55, 0.30, 0.15]))
-        is_international  = bool(self._rng.random() < 0.25)
-        card_present      = bool(self._rng.random() > 0.40)
-        bin_category      = int(self._rng.integers(0, 10))
-        time_of_day       = int(self._rng.integers(0, 24))
-        amount            = float(self._rng.lognormal(mean=4.0, sigma=1.0))
-
-        # Velocity and Fraud Risk
-        recent_count = sum(1 for x in self._velocity_buffer if x > 0.6)
-        transaction_velocity = float(np.clip(recent_count / 5.0, 0.0, 1.0))
-
-        mc_risk_arr = [0.05, 0.20, 0.15, 0.05, 0.20, 0.05]
-        raw_risk = (
-            (self._cfg["fraud_base_rate"] * fraud_multiplier) +
-            (0.3 if is_international else 0.0) +
-            (0.2 if transaction_velocity > 0.7 else 0.0) +
-            (mc_risk_arr[merchant_category]) +
-            (0.12 if device_type == 0 else 0.0)
-        )
-        reduction = (0.2 if card_present else 0.0) + (user_history_score * 0.4)
-        fraud_risk_score = float(np.clip(raw_risk - reduction, 0.0, 1.0))
-
-        # Derive discrete user_type
-        user_type = 2 if fraud_risk_score > 0.7 else (1 if fraud_risk_score > 0.35 else 0)
+        # 5. Other Transactional Features
+        bin_category = int(self._rng.integers(0, 10))
+        card_present = bool(self._rng.random() > 0.6 if is_night else 0.3)
+        
+        # Velocity and Fraud Risk (History Buffer)
+        velocity = float(np.clip(self._rng.random() * 0.2 + (0.5 if is_night else 0.0), 0.1, 0.9))
 
         return SmartpayenvObservation(
             amount=amount,
-            merchant_category=merchant_category,
+            merchant_category=mcc,
             is_international=is_international,
             card_present=card_present,
-            user_type=user_type,
+            user_type=0, 
             user_segment=segment,
             user_history_score=user_history_score,
             device_type=device_type,
             bin_category=bin_category,
-            transaction_velocity=transaction_velocity,
-            time_of_day=time_of_day,
+            transaction_velocity=velocity,
+            time_of_day=hour,
             gateway_success_rates=[g.current_rate for g in self._gateways],
             gateway_states=[g.state for g in self._gateways],
             fraud_risk_score=fraud_risk_score,
-            previous_failures=int(self._rng.integers(0, 4)),
+            previous_failures=self._state.consecutive_failures,
             difficulty=self._difficulty,
             reward=0.5,
             done=False,
@@ -210,7 +216,20 @@ class SmartpayenvEnvironment(Environment):
         
         obs = self.current_obs
         assert obs is not None # Satisfy type checker
-        self._velocity_buffer.append(obs.fraud_risk_score)
+        # 0. Stochastic Reality Drift
+        # Fraud Wave: base rate drifts every step
+        if self._state.step_count % 5 == 0:
+            drift = self._rng.normal(0, 0.05)
+            self._state.fraud_wave_drift = np.clip(self._state.fraud_wave_drift + drift, -0.1, 0.2)
+        
+        # Systemic Volatility: 5% chance of market-wide degradation
+        if self._rng.random() < 0.05:
+            for g in self._gateways:
+                if g.state == "normal":
+                    g.state = "degraded"
+                    g._countdown = int(self._rng.integers(4, 9))
+                    g.current_rate = g.current_rate * 0.7
+
         for gw in self._gateways: gw.step()
 
         # 1. 3DS / Action Logic
@@ -235,13 +254,19 @@ class SmartpayenvEnvironment(Environment):
             
             # BIN Affinity & 3DS Support
             affinity = BIN_AFFINITY[gateway][obs.bin_category]
+            
+            # Extreme Reality Scaling: mismatched BINs now fail aggressively
+            if affinity < 0.9:
+                affinity = affinity * 0.15 # Harsh penalty for subpar routing
+                
             # 3DS reduces remaining fraud risk by 90%
             eff_fraud_risk = obs.fraud_risk_score * (0.1 if action_3ds else 1.0)
             expected_outcome = gw_rates[gateway] * (1.0 - eff_fraud_risk) * affinity
-            expected_outcome = float(np.clip(expected_outcome, 0.0, 1.0))
+            expected_outcome = float(np.clip(expected_outcome, 0.05, 1.0))
 
-            # Simulate outcome (3DS introduces 15% abandonment failure)
-            if action_3ds and self._rng.random() < 0.15:
+            # Simulate outcome (Friction varies by segment: New = high distrust/abandonment)
+            abandon_prob = {0: 0.25, 1: 0.10, 2: 0.05}[obs.user_segment]
+            if action_3ds and self._rng.random() < abandon_prob:
                 success = False # User abandonment
             else:
                 success = bool(self._rng.random() < expected_outcome)
@@ -266,9 +291,16 @@ class SmartpayenvEnvironment(Environment):
                 gateway_rates=gw_rates,
             )
 
-            # Churn Impact
-            if action_3ds: self.retention_grader.add_step(1) # Friction bump
-            if not success: self.retention_grader.add_step(obs.previous_failures + 1)
+            # Success Logic
+            if success:
+                self._state.consecutive_failures = 0
+            else:
+                self._state.consecutive_failures += 1
+                self.retention_grader.add_step(self._state.consecutive_failures)
+
+            # Churn Impact (Friction/Failure)
+            if action_3ds: 
+                self.retention_grader.add_step(1) # Friction bump
                 
             # Delayed Chargeback: undetected fraud hit later (unless protected by 3DS)
             if success and is_fraud and not action_3ds:
@@ -276,17 +308,20 @@ class SmartpayenvEnvironment(Environment):
                 self._state.chargeback_queue.append((self._state.step_count + delay, obs.amount + 20.0))
 
         # Process maturation
+        cb_amt: float = 0.0
         pending = []
         for mat, pen in self._state.chargeback_queue:
-            if self._state.step_count >= mat: cb_penalty_this_step += pen
-            else: pending.append((mat, pen))
+            if self._state.step_count >= mat: 
+                cb_amt = cb_amt + float(pen)
+            else: 
+                pending.append((mat, pen))
         self._state.chargeback_queue = pending
 
         # Finalize
         self.current_obs = self._generate_transaction()
         self.current_obs.gateway_success_rates = [g.current_rate for g in self._gateways]
         self.current_obs.gateway_states        = [g.state for g in self._gateways]
-        self.current_obs.chargeback_penalty_applied = float(cb_penalty_this_step)
+        self.current_obs.chargeback_penalty_applied = cb_amt
         
         if done or self._state.step_count >= 100: self.current_obs.done = True
         
@@ -295,7 +330,7 @@ class SmartpayenvEnvironment(Environment):
         base_reward = (0.4 * route_score) + (0.4 * fs) + (0.2 * rs)
         
         # Norm punishment for chargebacks
-        final_reward = base_reward - (cb_penalty_this_step / 150.0)
+        final_reward = base_reward - (cb_amt / 150.0)
         self.current_obs.reward = float(np.clip(final_reward, 0.001, 0.999))
         
         self.current_obs.task_routing_score = route_score

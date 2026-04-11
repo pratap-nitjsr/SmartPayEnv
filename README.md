@@ -109,8 +109,8 @@ SmartPayEnv supports three core curriculum tasks, ranging from basic classificat
 | Task | Level | Objective | Metrics |
 |------|-------|-----------|---------|
 | `routing_efficacy` | Easy | Choose the gateway (0-2) with the highest affinity for the current card BIN. | Routing Score |
-| `fraud_detection` | Medium| Correctily identify and block (`action=1`) fraudulent transactions based on risk signals. | MCC Score |
 | `user_retention` | Medium| Minimize customer churn by ensuring high availability for premium/existing users. | Retention Score |
+| `fraud_detection` | Medium| Correctily identify and block (`action=1`) fraudulent transactions based on risk signals. | MCC Score |
 | `payment_optimization`| Hard | **Joint Equilibrium**: Optimize routing success, fraud mitigation, and user retention simultaneously. | Combined Reward |
 
 ---
