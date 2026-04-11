@@ -38,9 +38,11 @@ except Exception as e:  # pragma: no cover
 from fastapi.responses import RedirectResponse
 
 try:
+    # Try package-style relative import
     from ..models import SmartpayenvAction, SmartpayenvObservation
     from .SmartPayEnv_environment import SmartpayenvEnvironment
-except ModuleNotFoundError:
+except (ImportError, ValueError):
+    # Fallback to local import (for uvicorn server.app:app)
     from models import SmartpayenvAction, SmartpayenvObservation
     from server.SmartPayEnv_environment import SmartpayenvEnvironment
 

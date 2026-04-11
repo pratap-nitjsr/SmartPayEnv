@@ -20,10 +20,13 @@ from openenv.core.env_server.interfaces import Environment
 
 try:
     from ..models import SmartpayenvAction, SmartpayenvObservation
-except ImportError:
+except (ImportError, ValueError):
     from models import SmartpayenvAction, SmartpayenvObservation
 
-from .graders import RoutingEfficacyGrader, FraudDetectionGrader, UserRetentionGrader
+try:
+    from .graders import RoutingEfficacyGrader, FraudDetectionGrader, UserRetentionGrader
+except (ImportError, ValueError):
+    from server.graders import RoutingEfficacyGrader, FraudDetectionGrader, UserRetentionGrader
 
 
 # ── Configuration Constants ────────────────────────────────────────────
