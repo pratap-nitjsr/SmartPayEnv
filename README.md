@@ -2,7 +2,7 @@
 title: SmartPayEnv — Advanced Fintech Reality Layer
 emoji: 💳
 colorFrom: blue
-colorTo: slate
+colorTo: gray
 sdk: docker
 pinned: true
 app_port: 7860
