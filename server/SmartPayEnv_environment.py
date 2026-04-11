@@ -185,8 +185,11 @@ class SmartpayenvEnvironment(Environment):
             fraud_risk_score=fraud_risk_score,
             previous_failures=int(self._rng.integers(0, 4)),
             difficulty=self._difficulty,
-            reward=0.0,
+            reward=0.5,
             done=False,
+            task_routing_score=0.5,
+            task_fraud_mcc_score=0.5,
+            task_retention_score=0.5,
         )
 
     def reset(self, difficulty: int = 0) -> SmartpayenvObservation:
@@ -293,7 +296,7 @@ class SmartpayenvEnvironment(Environment):
         
         # Norm punishment for chargebacks
         final_reward = base_reward - (cb_penalty_this_step / 150.0)
-        self.current_obs.reward = float(np.clip(final_reward, 0.0, 1.0))
+        self.current_obs.reward = float(np.clip(final_reward, 0.001, 0.999))
         
         self.current_obs.task_routing_score = route_score
         self.current_obs.task_fraud_mcc_score = fs

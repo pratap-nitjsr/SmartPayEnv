@@ -56,7 +56,8 @@ class RoutingEfficacyGrader:
         penalty      = (self.beta * cost) + (self.gamma * retries)
 
         raw_score = outcome_term - penalty + (self.delta * decision_quality)
-        return self._sigmoid(raw_score)
+        # Strictly between (0, 1)
+        return max(0.001, min(0.999, self._sigmoid(raw_score)))
 
     @staticmethod
     def _sigmoid(x: float) -> float:
@@ -103,7 +104,8 @@ class FraudDetectionGrader:
         if denominator == 0:
             return 0.5  # Neutral — no signal yet
         mcc = numerator / denominator
-        return (mcc + 1.0) / 2.0  # Normalize [-1, 1] → [0, 1]
+        score = (mcc + 1.0) / 2.0  # Normalize [-1, 1] → [0, 1]
+        return max(0.001, min(0.999, score))
 
 
 # -----------------------------
@@ -127,8 +129,9 @@ class UserRetentionGrader:
         self.survived_users = max(0.0, self.survived_users - lost)
 
     def evaluate(self) -> float:
-        """Return retention ratio [0, 1]."""
-        return self.survived_users / self.total_users
+        """Return retention ratio strictly in (0, 1)."""
+        score = self.survived_users / self.total_users
+        return max(0.001, min(0.999, score))
 
 
 # -----------------------------
@@ -149,4 +152,5 @@ def process_combined_reward(
     retry_penalty = -0.2 * retries
 
     raw = route_score + fraud_bonus + false_penalty + retry_penalty
-    return 1.0 / (1.0 + math.exp(-raw))
+    score = 1.0 / (1.0 + math.exp(-raw))
+    return max(0.001, min(0.999, score))
