@@ -14,7 +14,7 @@ API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy-token")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
-MAX_STEPS = 30
+MAX_STEPS = 40
 SUCCESS_SCORE_THRESHOLD = 0.5
 ENV_URL = "http://localhost:7860"
 BENCHMARK = os.getenv("BENCHMARK", "SmartPayEnv")
@@ -122,6 +122,43 @@ def get_model_action(client: OpenAI, step: int, obs: dict, last_reward: float) -
             "fraud_decision": 0
         }
 
+def get_preference_signal(obs: dict) -> List[dict]:
+    """
+    Demonstrates preference-based ranking by simulating multiple action candidates.
+    """
+    candidates = [
+        {"gateway": 0, "fraud_decision": 0, "retry_strategy": 0}, # Aggressive
+        {"gateway": 1, "fraud_decision": 2, "retry_strategy": 0}, # Shielded (3DS)
+        {"gateway": 2, "fraud_decision": 3, "retry_strategy": 0}, # Manual Review
+    ]
+    
+    results = []
+    for action in candidates:
+        try:
+            res = requests.post(f"{ENV_URL}/simulate", json={"action": action})
+            if res.status_code == 200:
+                sim_obs = res.json()
+                reward = sim_obs.get("reward", 0.0)
+                # Add a small penalty for manual review to reflect true cost if not in reward
+                if action["fraud_decision"] == 3: reward -= 0.05
+                results.append((action, reward))
+        except:
+            continue
+            
+    if not results: return []
+    
+    # Calculate relative advantages
+    scores = [r for _, r in results]
+    mean = np.mean(scores)
+    std = np.std(scores) + 1e-6
+    
+    ranked = []
+    for action, reward in results:
+        adv = (reward - mean) / std
+        ranked.append({"action": action, "reward": reward, "advantage": adv})
+        
+    return sorted(ranked, key=lambda x: x["advantage"], reverse=True)
+
 def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     TASK_CONFIG = [
@@ -145,8 +182,15 @@ def main() -> None:
             last_reward = 0.0
 
             for step in range(1, MAX_STEPS + 1):
+                # Core Preference Logic: What-if analysis
+                preferences = get_preference_signal(obs)
+                pref_summary = ""
+                if preferences:
+                    top = preferences[0]
+                    pref_summary = f" [Best: {top['action']['fraud_decision']} Adv: {top['advantage']:.2f}]"
+
                 action_data = get_model_action(client, step, obs, last_reward)
-                thought = action_data.pop("thought")
+                thought = action_data.pop("thought") + pref_summary
                 action_dict = action_data
                 action_str = json.dumps(action_dict).replace(" ", "")
 

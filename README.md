@@ -85,8 +85,13 @@ sequenceDiagram
     Note over Env: [State] Clock advances + Events Triggered
     Env->>Agent: Observation (Noisy Risk + Lagged Health + Resolution Alerts)
     
-    Note over Agent: [Inference] Is there a fraud spike or gateway outage?
-    Agent->>Env: Action (Gateway Strategy + Fraud Decision)
+    rect rgb(30, 30, 30)
+        Note over Agent: [Optional] Simulation (GRPO/PPO)
+        Agent->>Env: POST /simulate (Group Samples)
+        Env-->>Agent: Branch Results (Advantage Signal)
+    end
+
+    Agent->>Env: Final Action (Gateway Strategy + Fraud Decision)
 
     rect rgb(30, 30, 30)
         Note over Env: [Reality] Execution & Scheduling
@@ -115,6 +120,7 @@ Agents can send transactions to manual review (Action 3). Resolutions are 100% a
 - **🛡️ 3DS Friction (Action 2)**: Provides a **90% fraud reduction** but triggers a **15-25% abandonment rate**. Agents must balance security vs. customer drop-off.
 - **⏳ Delayed Chargebacks**: Undetected fraud ($TrueRisk > 0.65$) matures into penalties (Tx Amount + $20 fee) **30-50 steps later**, forcing long-term liability management.
 - **📊 BIN-Gateway Affinity**: A hidden matrix of gateway performance across different card types. Agents must discover these affinities to optimize routing success.
+- **🧠 Preference-Based Learning (Simulation Branching)**: Supports advanced training (e.g., DPO/PPO) by allowing agents to "What-if" multiple actions from the same state via the `/simulate` endpoint. Agents can group similar contexts (BIN + Amount + Risk) and learn from relative advantages.
 
 ---
 
@@ -156,6 +162,23 @@ Models customer churn using an **Exponential Hazard Function** to simulate the "
 $$Retention = e^{-\lambda \cdot f^2}$$
 where $f$ is the count of consecutive failed transactions for that user cohort.
 - **Rationale**: Consecutive failures cause non-linear churn; a first failure is an annoyance, but a third consecutive failure leads to near-certain platform abandonment.
+
+---
+
+## 🧠 Reinforcement Learning Optimization (GRPO/PPO)
+
+SmartPayEnv is architected to support state-of-the-art RL training algorithms like **Group Relative Policy Optimization (GRPO)** and **Proximal Policy Optimization (PPO)**.
+
+### 1. Group Relative Policy Optimization (GRPO)
+SmartPayEnv enables GRPO by providing the infrastructure for **Group Sampling** without a value model.
+- **Group Signal**: Use the `POST /simulate` endpoint to generate $G$ actions for the same state.
+- **Relative Advantage**: The environment computes the advantage by standardizing rewards within the group:
+  $$Adv_i = \frac{R_i - \text{mean}(R_{group})}{\text{std}(R_{group}) + \epsilon}$$
+- **Stability**: This eliminates the need for a separate critic/baseline, mirroring the training architecture used for **DeepSeek-V3**.
+
+### 2. PPO & Policy Gradients
+- **Learnable Gradients**: Unlike binary simulations, our **Deterministic Graders** (see Scoring section) map fuzzy outcomes to continuous rewards $[0, 1]$. This prevents the "sparse reward" problem and provides stable gradients for PPO clip-range optimization.
+- **Context Bucketing**: The `server/preference_utils.py` module allows agents to bundle similar (BIN, Amount, Risk) states, enabling faster convergence on preference-based objectives.
 
 ---
 

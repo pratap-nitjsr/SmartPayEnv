@@ -63,6 +63,15 @@ async def redirect_to_docs():
     return RedirectResponse(url="/docs")
 
 
+@app.post("/simulate", response_model=SmartpayenvObservation)
+async def simulate(action: SmartpayenvAction):
+    """
+    Simulates an action without advancing the true environment state.
+    """
+    # OpenEnv environments are stored in app.env
+    return app.env.simulate(action)
+
+
 def main():
     """
     Entry point for direct execution via uv run or python -m.

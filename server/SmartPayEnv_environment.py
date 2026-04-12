@@ -413,6 +413,55 @@ class SmartpayenvEnvironment(Environment):
 
         return self.current_obs
 
+    def simulate(self, action: SmartpayenvAction) -> SmartpayenvObservation:
+        """
+        Simulates an action without advancing the true environment state.
+        Allows agents to explore 'what-if' scenarios from the same state.
+        """
+        import copy
+        
+        # 1. Full State Backup
+        # Note: We backup the entire current_obs and _state object.
+        # We also need to backup the graders because they track cumulative stats.
+        backup_state = copy.deepcopy(self._state)
+        backup_obs   = copy.deepcopy(self.current_obs)
+        backup_g_route     = copy.deepcopy(self.route_grader)
+        backup_g_fraud     = copy.deepcopy(self.fraud_grader)
+        backup_g_retention = copy.deepcopy(self.retention_grader)
+        
+        # Backup Gateway internal dynamics
+        backup_gateways_data = []
+        for g in self._gateways:
+            backup_gateways_data.append({
+                'state':        g.state,
+                'countdown':    g._countdown,
+                'current_rate': g.current_rate
+            })
+
+        # Backup RNG State to ensure determinism during simulation if needed
+        # Or alternatively, allow simulation to have its own random paths
+        rng_state = self._rng.bit_generator.state
+
+        # 2. Execute ephemeral step
+        sim_obs = copy.deepcopy(self.step(action))
+
+        # 3. Restore Reality
+        self._state      = backup_state
+        self.current_obs = backup_obs
+        self.route_grader     = backup_g_route
+        self.fraud_grader     = backup_g_fraud
+        self.retention_grader = backup_g_retention
+
+        for i, g in enumerate(self._gateways):
+            d = backup_gateways_data[i]
+            g.state        = d['state']
+            g._countdown   = d['countdown']
+            g.current_rate = d['current_rate']
+            
+        self._rng.bit_generator.state = rng_state
+
+        return sim_obs
+
     @property
     def state(self) -> State:
         return self._state
