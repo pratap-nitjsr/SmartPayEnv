@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-SmartPayEnv v3 — Advanced Fintech Reality Layer.
+SmartPayEnv — Advanced Fintech Reality Layer.
 
 High-fidelity benchmark for RL agents in the payment domain.
 Features: 3D Secure (3DS), Chargeback Delays, BIN Affinity, Dynamic Costs, & Cohorts.
@@ -25,8 +25,10 @@ except (ImportError, ValueError):
 
 try:
     from .graders import RoutingEfficacyGrader, FraudDetectionGrader, UserRetentionGrader
+    from .utils import LogLoader
 except (ImportError, ValueError):
     from server.graders import RoutingEfficacyGrader, FraudDetectionGrader, UserRetentionGrader
+    from server.utils import LogLoader
 
 
 # ── Configuration Constants ────────────────────────────────────────────
@@ -69,6 +71,12 @@ class State:
     fraud_wave_drift: float = 0.0
     market_volatility: float = 0.0
     chargeback_queue: list = field(default_factory=list)
+    health_lag_buffer: deque = field(default_factory=lambda: deque(maxlen=3)) # 2-step lag
+    true_fraud_risk: float = 0.0
+    simulation_hour: int = 0
+    active_events: dict = field(default_factory=dict) # e.g. {"fraud_spike": 10, "outage": 5}
+    log_cursor: int = 0
+    review_queue: list = field(default_factory=list) # [{ 'step': int, 'is_fraud': bool, 'amount': float }]
 
 
 class _GatewayState:
@@ -122,6 +130,8 @@ class SmartpayenvEnvironment(Environment):
         self.retention_grader = UserRetentionGrader()
         self._velocity_buffer = deque(maxlen=5)
         self.current_obs   = None
+        self._log_loader   = LogLoader()
+        self._pattern_queue = deque()
 
     def _init_gateways(self) -> None:
         instability = self._cfg["instability"]
@@ -132,64 +142,75 @@ class SmartpayenvEnvironment(Environment):
         ]
 
     def _generate_transaction(self) -> SmartpayenvObservation:
-        # 1. Advanced Diurnal Cycle (UTC)
-        # Peak Fraud: 01:00 - 05:00. Peak Volume: 12:00 - 20:00
+        # Check if we have a queued pattern to replay
+        if self._pattern_queue:
+            log_entry = self._pattern_queue.popleft()
+        else:
+            # Sample sequentially from logs to maintain temporal correlation
+            noise = {0: 0.05, 1: 0.15, 2: 0.3}[self._difficulty]
+            log_entry = self._log_loader.sample(index=self._state.log_cursor, noise_level=noise)
+            self._state.log_cursor += 1
+
+        if log_entry is None:
+            # Fallback to random if logs fail (shouldn't happen)
+            return self._generate_fallback_transaction()
+
+        true_risk = float(log_entry["fraud_risk_score"])
+        self._state.true_fraud_risk = true_risk
+
+        return SmartpayenvObservation(
+            amount=float(log_entry["amount"]),
+            merchant_category=int(log_entry["merchant_category"]),
+            is_international=bool(log_entry["is_international"]),
+            card_present=bool(log_entry["card_present"]),
+            user_type=0, 
+            user_segment=int(log_entry["user_segment"]),
+            user_history_score=float(log_entry["user_history_score"]),
+            device_type=int(log_entry["device_type"]),
+            bin_category=int(log_entry["bin_category"]),
+            transaction_velocity=float(log_entry["transaction_velocity"]),
+            time_of_day=int(log_entry["time_of_day"]),
+            gateway_success_rates=[g.current_rate for g in self._gateways],
+            gateway_states=[g.state for g in self._gateways],
+            observed_fraud_risk=self._get_noisy_risk(float(log_entry["fraud_risk_score"])),
+            previous_failures=self._state.consecutive_failures,
+            difficulty=self._difficulty,
+            reward=0.5,
+            done=False,
+            task_routing_score=0.5,
+            task_fraud_mcc_score=0.5,
+            task_retention_score=0.5,
+        )
+
+    def _get_noisy_risk(self, true_risk: float) -> float:
+        """Adds Gaussian noise to the true risk score."""
+        noise = self._rng.normal(0, 0.1)
+        return float(np.clip(true_risk + noise, 0.01, 0.99))
+
+    def _generate_fallback_transaction(self) -> SmartpayenvObservation:
+        # Original logic as fallback
         hour = int(self._state.step_count % 24)
-        is_night = (1 <= hour <= 5)
+        segment = int(self._rng.choice([0, 1, 2], p=[0.25, 0.60, 0.15]))
+        mcc = int(self._rng.choice([0, 1, 2, 3, 4, 5]))
+        amount = float(self._rng.lognormal(mean=4.0, sigma=0.8))
         
-        # 2. User Segments (Cohorts)
-        segment = int(self._rng.choice([0, 1, 2], p=[0.25, 0.60, 0.15])) # 0=New, 1=Existing, 2=Premium
-        
-        # Segment behavioral traits
-        fraud_mult = {0: 1.8, 1: 1.0, 2: 0.3}[segment]
-        history_mu  = {0: 0.3, 1: 0.7, 2: 0.9}[segment]
-        
-        # 3. Correlated Merchant Categories (MCC)
-        mcc = int(self._rng.choice([0, 1, 2, 3, 4, 5], p=[0.3, 0.2, 0.1, 0.1, 0.1, 0.2]))
-        
-        # MCC-Amount Correlation
-        amount_mu = {0: 4.0, 1: 4.5, 2: 6.5, 3: 7.0, 4: 5.0, 5: 3.0}[mcc]
-        amount = float(self._rng.lognormal(mean=amount_mu, sigma=0.8))
-        
-        # 4. Statistical Fraud Model
-        wave_drift = self._state.fraud_wave_drift
-        category_risk = {0: 0.02, 1: 0.05, 2: 0.15, 3: 0.08, 4: 0.25, 5: 0.12}[mcc]
-        
-        base_risk = self._cfg["fraud_base_rate"] + wave_drift + category_risk
-        if is_night: base_risk += 0.25 # Night surge
-        
-        is_international = bool(self._rng.random() < (0.4 if mcc == 3 else 0.15))
-        device_type = int(self._rng.choice([0, 1, 2], p=[0.5, 0.4, 0.1])) # 0=Mobile, 1=Web, 2=Unknown
-        
-        final_risk = base_risk + (0.15 if is_international else 0.0)
-        final_risk += (0.2 if device_type == 2 else 0.0)
-        
-        fraud_risk_score = float(np.clip(final_risk * fraud_mult, 0.01, 0.99))
-        user_history_score = float(np.clip(self._rng.normal(history_mu, 0.15), 0.1, 1.0))
-
-        # 5. Other Transactional Features
-        bin_category = int(self._rng.integers(0, 10))
-        card_present = bool(self._rng.random() > 0.6 if is_night else 0.3)
-        
-        # Velocity and Fraud Risk (History Buffer)
-        velocity = float(np.clip(self._rng.random() * 0.2 + (0.5 if is_night else 0.0), 0.1, 0.9))
-
+        self._state.true_fraud_risk = 0.1
         return SmartpayenvObservation(
             amount=amount,
             merchant_category=mcc,
-            is_international=is_international,
-            card_present=card_present,
-            user_type=0, 
+            is_international=False,
+            card_present=True,
+            user_type=0,
             user_segment=segment,
-            user_history_score=user_history_score,
-            device_type=device_type,
-            bin_category=bin_category,
-            transaction_velocity=velocity,
+            user_history_score=0.8,
+            device_type=0,
+            bin_category=0,
+            transaction_velocity=0.5,
             time_of_day=hour,
-            gateway_success_rates=[g.current_rate for g in self._gateways],
-            gateway_states=[g.state for g in self._gateways],
-            fraud_risk_score=fraud_risk_score,
-            previous_failures=self._state.consecutive_failures,
+            gateway_success_rates=[0.9, 0.9, 0.9],
+            gateway_states=["normal", "normal", "normal"],
+            observed_fraud_risk=0.1,
+            previous_failures=0,
             difficulty=self._difficulty,
             reward=0.5,
             done=False,
@@ -202,42 +223,65 @@ class SmartpayenvEnvironment(Environment):
         self._difficulty = int(np.clip(difficulty, 0, 2))
         self._cfg        = DIFFICULTY_CONFIG[self._difficulty]
         self._state      = State(episode_id=str(uuid4()), step_count=0)
+        # Random initial cursor for variety, but then sequential within episode
+        self._state.log_cursor = self._rng.integers(0, 100000) 
         self._init_gateways()
         self.route_grader     = RoutingEfficacyGrader()
         self.fraud_grader     = FraudDetectionGrader()
         self.retention_grader = UserRetentionGrader(churn_rate=self._cfg["churn_rate"])
         self._velocity_buffer.clear()
         self.current_obs = self._generate_transaction()
+        # Synchronize simulation clock with the log's starting hour
+        self._state.simulation_hour = self.current_obs.time_of_day
         return self.current_obs
 
     def step(self, action: SmartpayenvAction) -> SmartpayenvObservation:
         self._state.step_count += 1
+        
+        # Advance hour every 20 steps
+        if self._state.step_count % 20 == 0:
+            self._state.simulation_hour = (self._state.simulation_hour + 1) % 24
+        
         if self.current_obs is None: self.reset()
         
         obs = self.current_obs
-        assert obs is not None # Satisfy type checker
-        # 0. Stochastic Reality Drift
-        # Fraud Wave: base rate drifts every step
-        if self._state.step_count % 5 == 0:
-            drift = self._rng.normal(0, 0.05)
-            self._state.fraud_wave_drift = np.clip(self._state.fraud_wave_drift + drift, -0.1, 0.2)
-        
-        # Systemic Volatility: 5% chance of market-wide degradation
-        if self._rng.random() < 0.05:
-            for g in self._gateways:
-                if g.state == "normal":
-                    g.state = "degraded"
-                    g._countdown = int(self._rng.integers(4, 9))
-                    g.current_rate = g.current_rate * 0.7
+        assert obs is not None 
+
+        # 0. Temporal Event Management
+        # Decay active events (Safer way to delete items)
+        self._state.active_events = {e: d - 1 for e, d in self._state.active_events.items() if d > 1}
+
+        # Randomly trigger a systemic gateway outage (Event Correlation)
+        if self._rng.random() < 0.01:
+            self._state.active_events["systemic_outage"] = self._rng.integers(5, 15)
+            # Force multiple gateways into "degraded" state
+            for gw in self._gateways:
+                if self._rng.random() < 0.7:
+                    gw.state = "degraded"
+                    gw._countdown = self._state.active_events["systemic_outage"]
+                    gw.current_rate = gw.base_rate * 0.1
+
+        # 0. Gateway Health Lag Update
+        current_health = {
+            "rates": [g.current_rate for g in self._gateways],
+            "states": [g.state for g in self._gateways]
+        }
+        self._state.health_lag_buffer.append(current_health)
+
+        if self._state.step_count % 10 == 0 and self._rng.random() < 0.2:
+            # Inject a "Fraud Surge" pattern from logs
+            surge_logs = self._log_loader.get_pattern("fraud_surge", count=5)
+            self._pattern_queue.extend(surge_logs)
 
         for gw in self._gateways: gw.step()
 
         # 1. 3DS / Action Logic
-        is_fraud     = (obs.fraud_risk_score >= 0.65)
-        action_block = (action.fraud_decision == 1)
-        action_3ds   = (action.fraud_decision == 2)
+        is_fraud      = (self._state.true_fraud_risk >= 0.65)
+        action_block  = (action.fraud_decision == 1)
+        action_3ds    = (action.fraud_decision == 2)
+        action_review = (action.fraud_decision == 3)
         
-        self.fraud_grader.add_step(action_block or action_3ds, is_fraud)
+        self.fraud_grader.add_step(action_block or action_3ds or action_review, is_fraud)
 
         done = False
         success = False
@@ -247,8 +291,19 @@ class SmartpayenvEnvironment(Environment):
         cb_penalty_this_step = 0.0
 
         if action_block:
-            route_score = obs.fraud_risk_score if is_fraud else (obs.fraud_risk_score * 0.3)
+            route_score = self._state.true_fraud_risk if is_fraud else (self._state.true_fraud_risk * 0.3)
             done = True
+        elif action_review:
+            # Manual Review: Costly but accurate delay
+            total_cost += 5.0 # High internal cost for human time
+            delay = self._rng.integers(10, 25)
+            self._state.review_queue.append({
+                'maturation': self._state.step_count + delay,
+                'is_fraud': is_fraud,
+                'amount': obs.amount
+            })
+            route_score = 0.5 # Neutral immediate feedback
+            success = False # Held in review
         else:
             gw_rates = [g.current_rate for g in self._gateways]
             
@@ -260,7 +315,7 @@ class SmartpayenvEnvironment(Environment):
                 affinity = affinity * 0.15 # Harsh penalty for subpar routing
                 
             # 3DS reduces remaining fraud risk by 90%
-            eff_fraud_risk = obs.fraud_risk_score * (0.1 if action_3ds else 1.0)
+            eff_fraud_risk = self._state.true_fraud_risk * (0.1 if action_3ds else 1.0)
             expected_outcome = gw_rates[gateway] * (1.0 - eff_fraud_risk) * affinity
             expected_outcome = float(np.clip(expected_outcome, 0.05, 1.0))
 
@@ -275,7 +330,7 @@ class SmartpayenvEnvironment(Environment):
                 retries += 1
                 gateway  = (gateway + 1) % 3
                 affinity = BIN_AFFINITY[gateway][obs.bin_category]
-                expected_outcome = gw_rates[gateway] * (1.0 - obs.fraud_risk_score) * affinity
+                expected_outcome = gw_rates[gateway] * (1.0 - self._state.true_fraud_risk) * affinity
                 success = bool(self._rng.random() < expected_outcome)
 
             # Dynamic Cost: % + flat
@@ -310,18 +365,37 @@ class SmartpayenvEnvironment(Environment):
         # Process maturation
         cb_amt: float = 0.0
         pending = []
-        for mat, pen in self._state.chargeback_queue:
-            if self._state.step_count >= mat: 
-                cb_amt = cb_amt + float(pen)
+        for maturation_step, penalty_amount in self._state.chargeback_queue:
+            if self._state.step_count >= maturation_step: 
+                cb_amt += float(penalty_amount)
             else: 
-                pending.append((mat, pen))
+                pending.append((maturation_step, penalty_amount))
         self._state.chargeback_queue = pending
 
-        # Finalize
+        # 3. Apply Lagged Health to Next Observation
+        # Use first item in buffer for 2-step lag if buffer is full
+        lagged_health = self._state.health_lag_buffer[0] if len(self._state.health_lag_buffer) >= 3 else current_health
+        
         self.current_obs = self._generate_transaction()
-        self.current_obs.gateway_success_rates = [g.current_rate for g in self._gateways]
-        self.current_obs.gateway_states        = [g.state for g in self._gateways]
+        self.current_obs.time_of_day = self._state.simulation_hour
+        self.current_obs.gateway_success_rates = lagged_health["rates"]
+        self.current_obs.gateway_states        = lagged_health["states"]
         self.current_obs.chargeback_penalty_applied = cb_amt
+        
+        # Process and report matured Manual Reviews
+        matured_reviews = []
+        remaining_reviews = []
+        for r in self._state.review_queue:
+            if self._state.step_count >= r['maturation']:
+                matured_reviews.append({
+                    'amount': r['amount'],
+                    'is_fraud': r['is_fraud'],
+                    'outcome': 'rejected' if r['is_fraud'] else 'accepted'
+                })
+            else:
+                remaining_reviews.append(r)
+        self._state.review_queue = remaining_reviews
+        self.current_obs.review_resolutions = matured_reviews
         
         if done or self._state.step_count >= 100: self.current_obs.done = True
         

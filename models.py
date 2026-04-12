@@ -25,7 +25,7 @@ class SmartpayenvAction(Action):
     """
     gateway: int = Field(default=0, description="0=GatewayA (cheap), 1=GatewayB (balanced), 2=GatewayC (premium)")
     retry_strategy: int = Field(default=0, description="0=No Retry, 1=Failover to next gateway on failure")
-    fraud_decision: int = Field(default=0, description="0=Allow, 1=Block (end episode), 2=Challenge (3DS / MFA)")
+    fraud_decision: int = Field(default=0, description="0=Allow, 1=Block, 2=Challenge (3DS), 3=Manual Review (Delayed)")
 
 
 class SmartpayenvObservation(Observation):
@@ -70,9 +70,9 @@ class SmartpayenvObservation(Observation):
     )
 
     # ── Risk scores ───────────────────────────────────────────────────
-    fraud_risk_score: float = Field(
+    observed_fraud_risk: float = Field(
         default=0.0,
-        description="Continuous multi-factor fraud risk [0,1] (higher = more suspicious)"
+        description="Noisy multi-factor fraud risk estimate [0,1] (true risk is hidden)"
     )
 
     # ── Episode tracking ──────────────────────────────────────────────
@@ -83,6 +83,7 @@ class SmartpayenvObservation(Observation):
     reward: float = Field(default=0.0, description="Combined step reward [0,1]")
     done: bool = Field(default=False, description="Episode done flag")
     chargeback_penalty_applied: float = Field(default=0.0, description="Penalty deducted this step from a past transaction chargeback")
+    review_resolutions: list[dict] = Field(default_factory=list, description="List of resolved manual reviews this step: [{ 'amount': float, 'is_fraud': bool, 'outcome': 'accepted'|'rejected' }]")
 
     # Per-task scores — declared as first-class fields so openenv framework serializes them
     task_routing_score: float = Field(default=0.0, description="Routing efficacy score [0,1]")

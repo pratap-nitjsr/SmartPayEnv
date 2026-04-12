@@ -3,7 +3,7 @@ import sys
 import os
 
 # Add the root directory to path to import models and environment
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.SmartPayEnv_environment import SmartpayenvEnvironment
 from models import SmartpayenvAction
@@ -42,14 +42,14 @@ def test_3ds_mechanics():
     fraudulent_obs_found = False
     for _ in range(100):
         obs = env.reset(difficulty=1)
-        if obs.fraud_risk_score > 0.7:
+        if obs.observed_fraud_risk > 0.7:
             fraudulent_obs_found = True
             # Case 1: Allow (High risk of failure)
             # Case 2: 3DS (High chance of success if no abandonment)
             action_3ds = SmartpayenvAction(gateway=2, retry_strategy=0, fraud_decision=2)
             next_obs = env.step(action_3ds)
             # 3DS doesn't end episode immediately (unless it's step 100)
-            print(f"  - 3DS on high risk ({obs.fraud_risk_score:.2f}) -> Reward: {next_obs.reward:.2f}")
+            print(f"  - 3DS on high risk ({obs.observed_fraud_risk:.2f}) -> Reward: {next_obs.reward:.2f}")
             break
     
     if not fraudulent_obs_found:
@@ -69,7 +69,7 @@ def test_chargeback_delay():
     
     for i in range(1, 101):
         # Find a fraud
-        is_fraud = obs.fraud_risk_score >= 0.65
+        is_fraud = obs.observed_fraud_risk >= 0.65
         
         if is_fraud and not cb_queued:
             # Allow it

@@ -102,7 +102,7 @@ class FraudDetectionGrader:
             (self.tn + self.fn)
         )
         if denominator == 0:
-            return 0.1  # Fail — insufficient data signal
+            return 0.5  # Neutral — insufficient data to compute MCC
         mcc = numerator / denominator
         score = (mcc + 1.0) / 2.0  # Normalize [-1, 1] → [0, 1]
         return max(0.001, min(0.999, score))

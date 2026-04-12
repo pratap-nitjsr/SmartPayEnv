@@ -71,40 +71,56 @@ graph TD
 
 ---
 
-## 🌊 The Payment Lifecycle (with LLM Context)
+## 🌊 The Payment Lifecycle (The Reality Loop)
 
-The core interaction loop models an AI Agent acting as a **Smart Router and Risk Engine**.
+The environment models a high-frequency feedback loop where agents navigate noisy signals and delayed consequences.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant LLM as LLM Agent (Decision Maker)
-    participant Env as Environment (Reality Layer)
-    participant CB as Chargeback Maturity Queue
+    participant Agent as AI Agent (LLM/RL)
+    participant Env as Reality Engine
+    participant Queue as Review/CB Queues
 
-    Env->>LLM: Observation: {BIN: 4111, Amount: $500, UserSegment: New, ...}
+    Note over Env: [State] Clock advances + Events Triggered
+    Env->>Agent: Observation (Noisy Risk + Lagged Health + Resolution Alerts)
     
-    Note over LLM: Agent analyzes fraud signals vs. BIN affinity
-    LLM->>Env: Action: {gateway: 1, fraud_decision: 2} (3DS Challenge)
-    
-    rect rgb(50, 50, 50)
-    Note over Env: Reality Simulation
-    Env->>Env: Apply 15% User Abandonment (Friction)
-    Env->>Env: Calculate Success (Gateway 1 Rate * BIN 4111 Affinity)
+    Note over Agent: [Inference] Is there a fraud spike or gateway outage?
+    Agent->>Env: Action (Gateway Strategy + Fraud Decision)
+
+    rect rgb(30, 30, 30)
+        Note over Env: [Reality] Execution & Scheduling
+        Env->>Env: Success = f(Health, BIN, TrueRisk, Noise)
+        Env->>Queue: Schedule Reviews (10s) and Chargebacks (40s)
     end
 
-    Env-->>LLM: Step Outcome: Reward, Done, chargeback_penalty=0
-    
-    Note over Env,CB: 30-50 Transactions Later...
-    CB->>Env: Fraud Detected from Step 1
-    Env-->>LLM: Next Observation: {chargeback_penalty_applied: $520.00}
+    Queue-->>Env: Matured Results from previous steps
+    Env->>Agent: Feedback (Reward, Done, Resolved Alerts)
 ```
+
+---
+
+## 💎 Advanced Reality Features
+
+### 1. Log-Driven Time-Series
+Sequentially streams from synthetic logs to simulate real-world distributions, diurnal cycles (simulation clock), and persistent fraud surges.
+
+### 2. Partial Observability
+Forces agents to infer state by adding noise to risk signals, hiding internal user tiers, and lagging gateway health metrics by 2 steps.
+
+### 3. Human-in-the-Loop (HITL)
+Agents can send transactions to manual review (Action 3). Resolutions are 100% accurate but incur a $5.00 fee and a 10-25 step delay.
+
+### 4. Advanced Adversarial Mechanics
+- **🛡️ 3DS Friction (Action 2)**: Provides a **90% fraud reduction** but triggers a **15-25% abandonment rate**. Agents must balance security vs. customer drop-off.
+- **⏳ Delayed Chargebacks**: Undetected fraud ($TrueRisk > 0.65$) matures into penalties (Tx Amount + $20 fee) **30-50 steps later**, forcing long-term liability management.
+- **📊 BIN-Gateway Affinity**: A hidden matrix of gateway performance across different card types. Agents must discover these affinities to optimize routing success.
 
 ---
 
 ## 🎯 Benchmark Tasks
 
-SmartPayEnv supports three core curriculum tasks, ranging from basic classification to complex joint optimization.
+SmartPayEnv supports four curriculum tasks, ranging from basic classification to complex joint optimization.
 
 | Task | Level | Objective | Metrics |
 |------|-------|-----------|---------|
@@ -124,69 +140,46 @@ Grades the quality of the gateway choice and transaction outcome.
 - **Formula**: $Reward = \sigma(\alpha \cdot (2E - 1) - (\beta \cdot Cost + \gamma \cdot Retries) + \delta \cdot Quality)$
 - **Key Parameters**:
     - **$\alpha$ (Outcome Weight: 1.2)**: Scales the impact of the expected success.
-    - **$\beta$ (Cost Multiplier: 0.15)**: Penalizes choosing expensive gateways (Fixed + % Fees).
-    - **$\gamma$ (Retry Penalty: 0.4)**: Discourages excessive retries which increase latency.
-    - **$\delta$ (Decision Bonus: 0.8)**: Rewards selecting the gateway with the highest current affinity/rate, even if the transaction fails due to environment noise.
-
-
+    - **$\beta$ (Cost Multiplier: 0.15)**: Penalizes choosing expensive gateways.
+    - **$\gamma$ (Retry Penalty: 0.4)**: Discourages excessive retries.
+    - **$\delta$ (Decision Bonus: 0.8)**: Rewards selecting the gateway with the highest current affinity.
 
 ### 2. Fraud Detection Grader (MCC)
-Uses the **Matthews Correlation Coefficient (MCC)** to handle imbalanced transaction data.
-- **Why?**: In payments, fraud is rare (~2%). Accuracy is a misleading metric; MCC captures the balance between True Positives (blocked fraud) and False Positives (blocked legitimate users).
-- **Normalization**: Maps MCC $[-1, 1]$ to a learnable range $[0, 1]$, where $0.5$ represents a random baseline.
+Uses the **Matthews Correlation Coefficient (MCC)** to handle imbalanced transaction data (fraud is rare, ~2%).
+- **MCC Formula**:
+$$MCC = \frac{TP \times TN - FP \times FN}{\sqrt{(TP + FP)(TP + FN)(TN + FP)(TN + FN)}}$$
+- **Reward Mapping**: Maps MCC $[-1, 1]$ to a learnable range $[0, 1]$ using $R = \frac{MCC + 1}{2}$. A baseline of $0.5$ represents a random classifier.
 
 ### 3. User Retention Grader
-Models customer churn using an **Exponential Hazard Function**.
-- **Mechanic**: Every failed transaction increments a `consecutive_failures` counter for the user.
-- **Hazard Formula**: $1 - e^{-\lambda \cdot (failures^2)}$
-- **Rationale**: Models the "Trust Deficit." A first failure is annoying; a third consecutive failure causes **non-linear churn**, reflecting how premium users abandon platforms after bad experiences.
+Models customer churn using an **Exponential Hazard Function** to simulate the "Trust Deficit."
+- **Retention Formula**:
+$$Retention = e^{-\lambda \cdot f^2}$$
+where $f$ is the count of consecutive failed transactions for that user cohort.
+- **Rationale**: Consecutive failures cause non-linear churn; a first failure is an annoyance, but a third consecutive failure leads to near-certain platform abandonment.
 
 ---
 
 ## 📐 Data Models
 
 ### Action Space (`SmartpayenvAction`)
-Decisions submitted by the agent at each step:
-
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
-| `gateway` | `int` | `0, 1, 2` | 0=GatewayA (Economy), 1=GatewayB (Standard), 2=GatewayC (Premium) |
-| `fraud_decision`| `int` | `0, 1, 2` | 0=Allow, 1=Block (Ends episode), 2=3DS Challenge (Friction) |
-| `retry_strategy`| `int` | `0, 1` | 0=No Retry, 1=Auto-Failover to next gateway on failure |
+| `gateway` | `int` | `0, 1, 2` | 0=Economy, 1=Standard, 2=Premium |
+| `fraud_decision`| `int` | `0, 1, 2, 3`| 0=Allow, 1=Block, 2=3DS (Challenge), 3=Manual Review |
+| `retry_strategy`| `int` | `0, 1` | 0=No Retry, 1=Auto-Failover |
 
 ### Observation Space (`SmartpayenvObservation`)
-The state provided to the agent for each transaction:
-
-| Category | Field | Values | Description |
-|----------|-------|--------|-------------|
-| **Context** | `amount` | `float` | Transaction value in USD ($1 - $5000) |
-| | `bin_category` | `0-9` | Card type (e.g., 0=Domestic Debit, 5=International Credit) |
-| | `user_segment` | `0, 1, 2` | 0=New, 1=Existing, 2=Premium (Lower fraud risk) |
-| **Signals** | `fraud_risk_score`| `0..1` | Multi-factor risk probability (higher = more suspicious) |
-| | `user_history_score`| `0..1` | Normalized reliability based on previous successful tx |
-| **Health** | `gateway_states` | `str[]` | Health status per gateway: `normal`, `degraded`, `recovering` |
-| | `gateway_success_rates`| `float[]`| Real-time estimated success probabilities for A, B, and C |
-| **Tracking**| `chargeback_penalty_applied`| `float` | Penalty deducted *this step* from a past undetected fraud |
-| | `previous_failures`| `int` | Consecutive failures in current cohort session (influences churn) |
-
----
-
-## 🛠️ Advanced Reality Features
-
-### 🛡️ 3D Secure (3DS) Friction
-The `fraud_decision=2` action triggers a 3DS challenge.
-- **Security**: Provides a **90% reduction** in fraud risk.
-- **Friction**: Triggers a **15% abandonment rate** (User Drop-off). Agents must learn when the transaction value justifies the risk of losing the customer.
-
-### ⏳ Delayed Chargebacks
-Undetected fraud ($FraudRisk > 0.65$) incurs a **Chargeback Penalty** that matures **30-50 steps** after the transaction.
-- **Impact**: Full transaction amount + $20 chargeback fee.
-- **Goal**: Forces agents to balance immediate routing success against long-term liability.
-
-### 📊 BIN-Gateway Affinity
-A 10x3 matrix mapping card types (BIN categories) to gateway strengths. 
-- Some gateways process "Debit" better, while others are "Premium Credit" specialists.
-- Agents must discover these hidden affinities to maximize success rates.
+| Category | Field | Description |
+|----------|-------|-------------|
+| **Context** | `amount` | Transaction value in USD |
+| | `bin_category` | Card type (0-9) |
+| | `user_segment` | 0=New, 1=Existing, 2=Premium |
+| **Signals** | `observed_fraud_risk`| Noisy risk probability [0,1] |
+| | `time_of_day` | Current simulation hour (0-23) |
+| **Reviews**| `review_resolutions`| List of matured manual review results |
+| **Health** | `gateway_states` | LAGGED Health status (2 steps delay) |
+| | `gateway_success_rates`| LAGGED success probabilities |
+| **Tracking**| `chargeback_penalty_applied`| Penalty from a past undetected fraud |
 
 ---
 
@@ -207,7 +200,7 @@ uv sync
 openenv validate
 
 # Run core logic tests
-python tests/test_v3_features.py
+python tests/test_reality_features.py
 ```
 
 ### 2. Starting the Server
@@ -231,13 +224,19 @@ docker run -p 7860:7860 smartpay-env
 ## 📁 Project Structure
 ```text
 SmartPayEnv/
+├── scripts/
+│   ├── generate_logs.py         # Synthetic dataset generator
+├── data/
+│   ├── transactions_log.jsonl   # Pre-generated transaction pool
 ├── server/
 │   ├── app.py                  # FastAPI Entry Point (Uvicorn)
 │   ├── SmartPayEnv_environment.py # Core Reality Layer Logic
-│   └── graders.py               # Math models for RL Reward
+│   ├── graders.py               # Math models for RL Reward
+│   └── utils.py                 # Log loading & sampling utilities
 ├── tests/
 │   ├── test_graders.py         # Unit tests for scoring math
-│   └── test_v3_features.py     # Reality layer verification 
+│   ├── test_reality_features.py # Reality layer verification
+│   └── test_env_logs.py        # Log-driven simulation test
 ├── models.py                   # Pydantic Action/Observation Schemas
 ├── inference.py                # LLM/RL Agent Driver & Curriculum
 ├── pyproject.toml              # Dependency & Build Manifest

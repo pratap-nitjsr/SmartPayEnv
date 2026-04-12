@@ -14,7 +14,7 @@ API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy-token")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
-MAX_STEPS = 20
+MAX_STEPS = 30
 SUCCESS_SCORE_THRESHOLD = 0.5
 ENV_URL = "http://localhost:7860"
 BENCHMARK = os.getenv("BENCHMARK", "SmartPayEnv")
@@ -45,14 +45,24 @@ SYSTEM_PROMPT = textwrap.dedent(
        - Hours 01:00-05:00: Severe Fraud Surge (Attack period).
        - Segment 0 (New): High distrust/abandonment during 3DS challenges.
     
+    4. Manual Review:
+       - Action 3: Sends tx to human team. 10-25 step delay.
+       - Cost: $5.00 fee. Highest accuracy but slow.
+    
     ### ACTION SCHEMA:
     Respond with EXACTLY ONE JSON object:
     {{
-        "thought": "Reasoning based on current BIN category vs Affinity Matrix and Risk Score",
+        "thought": "Reasoning based on current BIN category vs Affinity Matrix and Observed Risk",
         "gateway": 0|1|2,
         "retry_strategy": 0|1,
-        "fraud_decision": 0(Allow)|1(Block)|2(3DS Challenge)
+        "fraud_decision": 0(Allow)|1(Block)|2(3DS Challenge)|3(Manual Review)
     }}
+
+    ### IMPORTANT:
+    - Observations are PARTIAL. `observed_fraud_risk` is a noisy estimate.
+    - Gateway health signals are LAGGED by ~2 steps.
+    - `user_type` is hidden.
+    - Events (Spikes, Outages) are CORRELATED and have DURATION.
     """
 ).strip()
 
