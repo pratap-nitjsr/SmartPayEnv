@@ -6,7 +6,6 @@ colorTo: gray
 sdk: docker
 pinned: true
 app_port: 7860
-base_path: /docs
 tags:
   - openenv
   - fintech
