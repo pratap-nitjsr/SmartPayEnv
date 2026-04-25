@@ -142,6 +142,15 @@ class SmartpayenvEnvironment(Environment):
         self._pattern_queue = deque()
         self._meta_curriculum_enabled = True
 
+        # ── Learnable adversary (theme-4 co-evolution) ─────────────────
+        # Set externally via `configure_adversary(...)` and consumed by
+        # `_get_noisy_risk` / `step` to control how aggressive the fraud
+        # generator behaves. Defaults are neutral (no extra pressure).
+        self._adv_intensity        = 1.0   # multiplier on fraud rate (1.0 = baseline)
+        self._adv_noise_boost      = 0.0   # extra std on observed fraud risk
+        self._adv_pattern_rate     = 0.2   # base prob of injecting a fraud-surge pattern
+        self._adv_strategy         = "mixed"  # "mixed" | "fraud_surge" | "stealth_fraud" | "velocity_attack"
+
     def _init_gateways(self) -> None:
         instability = self._cfg["instability"]
         self._gateways = [
@@ -164,7 +173,10 @@ class SmartpayenvEnvironment(Environment):
             # Fallback to random if logs fail (shouldn't happen)
             return self._generate_fallback_transaction()
 
-        true_risk = float(log_entry["fraud_risk_score"])
+        # Adversary intensifier: scale the underlying fraud risk so a learned
+        # fraud agent can sharpen attacks against the defender LLM.
+        true_risk = float(log_entry["fraud_risk_score"]) * float(self._adv_intensity)
+        true_risk = float(np.clip(true_risk, 0.0, 1.0))
         self._state.true_fraud_risk = true_risk
 
         return SmartpayenvObservation(
@@ -192,8 +204,10 @@ class SmartpayenvEnvironment(Environment):
         )
 
     def _get_noisy_risk(self, true_risk: float) -> float:
-        """Adds Gaussian noise to the true risk score."""
-        noise = self._rng.normal(0, 0.1)
+        """Adds Gaussian noise to the true risk score.
+        Adversary policy can boost noise to make detection harder (stealth)."""
+        std = 0.1 + max(0.0, float(self._adv_noise_boost))
+        noise = self._rng.normal(0, std)
         return float(np.clip(true_risk + noise, 0.01, 0.99))
 
     def _generate_fallback_transaction(self) -> SmartpayenvObservation:
@@ -228,12 +242,19 @@ class SmartpayenvEnvironment(Environment):
             task_retention_score=0.5,
         )
 
-    def reset(self, difficulty: int = 0) -> SmartpayenvObservation:
+    def reset(self, difficulty: int = 0, seed: int | None = None) -> SmartpayenvObservation:
         self._difficulty = int(np.clip(difficulty, 0, 2))
         self._cfg        = DIFFICULTY_CONFIG[self._difficulty]
+        # Optional deterministic seeding so a GRPO group can share the same
+        # starting trajectory across all candidate completions (clean signal).
+        if seed is not None:
+            self._rng = np.random.default_rng(int(seed))
         self._state      = State(episode_id=str(uuid4()), step_count=0)
-        # Random initial cursor for variety, but then sequential within episode
-        self._state.log_cursor = self._rng.integers(0, 100000) 
+        # Cursor is also seed-determined when a seed is provided.
+        if seed is not None:
+            self._state.log_cursor = int(seed) % 100000
+        else:
+            self._state.log_cursor = int(self._rng.integers(0, 100000))
         self._init_gateways()
         self.route_grader     = RoutingEfficacyGrader()
         self.fraud_grader     = FraudDetectionGrader()
@@ -247,6 +268,31 @@ class SmartpayenvEnvironment(Environment):
         self._state.challenger_skill = 0.55 + (0.08 * self._difficulty)
         self._state.anti_gaming_alerts = 0
         return self.current_obs
+
+    # ── Adversary configuration (theme-4 co-evolution) ─────────────────
+    def configure_adversary(
+        self,
+        intensity: float | None = None,
+        noise_boost: float | None = None,
+        pattern_rate: float | None = None,
+        strategy: str | None = None,
+    ) -> dict:
+        """Set the parametric fraud agent's behaviour. All values are clipped
+        to safe ranges. Returns the active adversary config."""
+        if intensity is not None:
+            self._adv_intensity = float(np.clip(intensity, 0.5, 2.5))
+        if noise_boost is not None:
+            self._adv_noise_boost = float(np.clip(noise_boost, 0.0, 0.6))
+        if pattern_rate is not None:
+            self._adv_pattern_rate = float(np.clip(pattern_rate, 0.0, 0.9))
+        if strategy is not None and strategy in {"mixed", "fraud_surge", "stealth_fraud", "velocity_attack"}:
+            self._adv_strategy = strategy
+        return {
+            "intensity": self._adv_intensity,
+            "noise_boost": self._adv_noise_boost,
+            "pattern_rate": self._adv_pattern_rate,
+            "strategy": self._adv_strategy,
+        }
 
     def _curriculum_multiplier(self) -> float:
         return 1.0 + (0.15 * self._state.curriculum_level)
@@ -313,10 +359,15 @@ class SmartpayenvEnvironment(Environment):
         }
         self._state.health_lag_buffer.append(current_health)
 
-        if self._state.step_count % 10 == 0 and self._rng.random() < 0.2:
-            # Inject a "Fraud Surge" pattern from logs
-            surge_logs = self._log_loader.get_pattern("fraud_surge", count=5)
-            self._pattern_queue.extend(surge_logs)
+        if self._state.step_count % 10 == 0 and self._rng.random() < self._adv_pattern_rate:
+            # Adversary-controlled attack injection. The fraud agent picks
+            # the pattern type; "mixed" rotates among them.
+            if self._adv_strategy == "mixed":
+                pat = self._rng.choice(["fraud_surge", "stealth_fraud", "velocity_attack"])
+            else:
+                pat = self._adv_strategy
+            atk_logs = self._log_loader.get_pattern(str(pat), count=5)
+            self._pattern_queue.extend(atk_logs)
 
         # Curriculum-driven stress events (self-improvement pressure).
         if self._rng.random() < (0.01 * self._curriculum_multiplier()):

@@ -11,7 +11,9 @@ It is intentionally lightweight so teams can run it in Colab with TRL/Unsloth.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import random
 from dataclasses import dataclass
 from typing import Any
@@ -19,9 +21,11 @@ from typing import Any
 import requests
 
 
-ENV_URL = "http://localhost:7860"
-MAX_STEPS = 200
-GROUP_SIZE = 8
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860").rstrip("/")
+MAX_STEPS = int(os.getenv("MAX_STEPS", "200"))
+GROUP_SIZE = int(os.getenv("GROUP_SIZE", "8"))
+DIFFICULTY = int(os.getenv("DIFFICULTY", "2"))
+RANDOM_SEED = int(os.getenv("SEED", "42"))
 
 
 @dataclass
@@ -69,8 +73,14 @@ def _reset(difficulty: int = 2) -> dict[str, Any]:
     return payload.get("observation", payload)
 
 
-def collect_group_relative_pairs(max_steps: int = MAX_STEPS, group_size: int = GROUP_SIZE) -> list[RolloutExample]:
-    obs = _reset(difficulty=2)
+def collect_group_relative_pairs(
+    max_steps: int = MAX_STEPS,
+    group_size: int = GROUP_SIZE,
+    difficulty: int = DIFFICULTY,
+    seed: int = RANDOM_SEED,
+) -> list[RolloutExample]:
+    random.seed(seed)
+    obs = _reset(difficulty=difficulty)
     dataset: list[RolloutExample] = []
     actions_pool = _action_candidates()
 
@@ -111,7 +121,7 @@ def collect_group_relative_pairs(max_steps: int = MAX_STEPS, group_size: int = G
         step_payload = _step(best_action)
         obs = step_payload.get("observation", step_payload)
         if bool(obs.get("done", False)):
-            obs = _reset(difficulty=2)
+            obs = _reset(difficulty=difficulty)
 
     return dataset
 
@@ -134,6 +144,21 @@ def export_jsonl(dataset: list[RolloutExample], output_path: str) -> None:
 
 
 if __name__ == "__main__":
-    data = collect_group_relative_pairs()
-    export_jsonl(data, "theme4_grpo_pairs.jsonl")
-    print(f"Collected {len(data)} preference pairs into theme4_grpo_pairs.jsonl")
+    parser = argparse.ArgumentParser(description="Collect group-relative preference pairs from SmartPayEnv.")
+    parser.add_argument("--env-url", default=ENV_URL, help="SmartPayEnv server URL")
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help="Number of rollout steps")
+    parser.add_argument("--group-size", type=int, default=GROUP_SIZE, help="Actions sampled per step")
+    parser.add_argument("--difficulty", type=int, default=DIFFICULTY, help="Environment difficulty 0/1/2")
+    parser.add_argument("--seed", type=int, default=RANDOM_SEED, help="Random seed")
+    parser.add_argument("--output", default="theme4_grpo_pairs.jsonl", help="Output JSONL path")
+    args = parser.parse_args()
+
+    ENV_URL = args.env_url.rstrip("/")
+    data = collect_group_relative_pairs(
+        max_steps=args.max_steps,
+        group_size=args.group_size,
+        difficulty=args.difficulty,
+        seed=args.seed,
+    )
+    export_jsonl(data, args.output)
+    print(f"Collected {len(data)} preference pairs into {args.output}")

@@ -64,6 +64,42 @@ async def simulate(action: SmartpayenvAction):
     return app.env.simulate(action)
 
 
+# ── Theme-4 co-evolution endpoints ────────────────────────────────────
+from typing import Optional
+from pydantic import BaseModel
+
+
+class AdversaryConfig(BaseModel):
+    """Parametric fraud-agent policy. Any field may be omitted."""
+    intensity: Optional[float] = None
+    noise_boost: Optional[float] = None
+    pattern_rate: Optional[float] = None
+    strategy: Optional[str] = None  # "mixed" | "fraud_surge" | "stealth_fraud" | "velocity_attack"
+
+
+class SeededReset(BaseModel):
+    difficulty: int = 0
+    seed: Optional[int] = None
+
+
+@app.post("/configure_adversary")
+async def configure_adversary(cfg: AdversaryConfig):
+    """Set the learnable fraud agent's behaviour. Returns the active config."""
+    return app.env.configure_adversary(
+        intensity=cfg.intensity,
+        noise_boost=cfg.noise_boost,
+        pattern_rate=cfg.pattern_rate,
+        strategy=cfg.strategy,
+    )
+
+
+@app.post("/reset_seeded", response_model=SmartpayenvObservation)
+async def reset_seeded(req: SeededReset):
+    """Deterministic reset: same `seed` => same starting trajectory.
+    Useful for GRPO so all completions in a group share the same state."""
+    return app.env.reset(difficulty=int(req.difficulty), seed=req.seed)
+
+
 def main():
     """
     Entry point for direct execution via uv run or python -m.

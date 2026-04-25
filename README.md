@@ -209,6 +209,28 @@ The self-improving upgrades are inspired by:
 
 ---
 
+## 🧪 Judge Repro (Colab + HF Credits)
+
+For hackathon evaluation, use the Colab notebook:
+- `notebooks/theme4_judge_repro_colab.ipynb`
+
+What this notebook does:
+- connects to the deployed Space (`https://pratap-k-smartpayenv.hf.space`)
+- collects group-relative preference pairs from `/simulate`
+- runs a lightweight TRL DPO pass
+- writes reproducible artifacts (`artifacts/run_metrics.json`)
+
+Judge flow:
+1. Open notebook in Colab and run all cells.
+2. Login with Hugging Face token when prompted (credits-enabled account).
+3. Keep `QUICK_MODE=True` for fast rerun; set `False` for longer training.
+
+Expected runtime:
+- Quick mode: ~10-20 minutes
+- Full mode: ~45-90 minutes (depending on Colab hardware/model)
+
+---
+
 ## 📐 Data Models
 
 ### Action Space (`SmartpayenvAction`)
