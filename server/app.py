@@ -58,9 +58,9 @@ app = create_app(
 )
 
 
-@app.get("/", include_in_schema=False)
-async def redirect_to_docs():
-    return RedirectResponse(url="/docs")
+# @app.get("/", include_in_schema=False)
+# async def redirect_to_docs():
+#     return RedirectResponse(url="/docs")
 
 
 @app.post("/simulate", response_model=SmartpayenvObservation)
