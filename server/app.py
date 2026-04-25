@@ -35,8 +35,6 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
 
-from fastapi.responses import RedirectResponse
-
 try:
     # Try package-style relative import
     from ..models import SmartpayenvAction, SmartpayenvObservation
@@ -54,13 +52,7 @@ app = create_app(
     SmartpayenvObservation,
     env_name="SmartPayEnv",
     max_concurrent_envs=1,
-    # enable_web=True,
 )
-
-
-# @app.get("/", include_in_schema=False)
-# async def redirect_to_docs():
-#     return RedirectResponse(url="/docs")
 
 
 @app.post("/simulate", response_model=SmartpayenvObservation)
