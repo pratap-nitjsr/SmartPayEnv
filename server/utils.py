@@ -39,6 +39,14 @@ class LogLoader:
         if pattern_type == "fraud_surge":
             # Filter for high fraud risk
             candidates = [l for l in self.logs if l.get("fraud_risk_score", 0) > 0.5]
+        elif pattern_type == "stealth_fraud":
+            candidates = [
+                l for l in self.logs
+                if l.get("is_fraud", False)
+                and "low_risk_disguise" in str(l.get("fraud_strategy", ""))
+            ]
+        elif pattern_type == "velocity_attack":
+            candidates = [l for l in self.logs if float(l.get("transaction_velocity", 0.0)) > 0.7]
         elif pattern_type == "premium_only":
             candidates = [l for l in self.logs if l.get("user_segment") == 2]
         else:

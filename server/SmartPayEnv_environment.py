@@ -77,6 +77,14 @@ class State:
     active_events: dict = field(default_factory=dict) # e.g. {"fraud_spike": 10, "outage": 5}
     log_cursor: int = 0
     review_queue: list = field(default_factory=list) # [{ 'step': int, 'is_fraud': bool, 'amount': float }]
+    curriculum_level: float = 0.0
+    policy_skill_estimate: float = 0.5
+    challenger_skill: float = 0.55
+    recent_rewards: deque = field(default_factory=lambda: deque(maxlen=25))
+    recent_route_scores: deque = field(default_factory=lambda: deque(maxlen=25))
+    recent_fraud_scores: deque = field(default_factory=lambda: deque(maxlen=25))
+    recent_retention_scores: deque = field(default_factory=lambda: deque(maxlen=25))
+    anti_gaming_alerts: int = 0
 
 
 class _GatewayState:
@@ -132,6 +140,7 @@ class SmartpayenvEnvironment(Environment):
         self.current_obs   = None
         self._log_loader   = LogLoader()
         self._pattern_queue = deque()
+        self._meta_curriculum_enabled = True
 
     def _init_gateways(self) -> None:
         instability = self._cfg["instability"]
@@ -233,7 +242,43 @@ class SmartpayenvEnvironment(Environment):
         self.current_obs = self._generate_transaction()
         # Synchronize simulation clock with the log's starting hour
         self._state.simulation_hour = self.current_obs.time_of_day
+        self._state.curriculum_level = float(self._difficulty)
+        self._state.policy_skill_estimate = 0.5
+        self._state.challenger_skill = 0.55 + (0.08 * self._difficulty)
+        self._state.anti_gaming_alerts = 0
         return self.current_obs
+
+    def _curriculum_multiplier(self) -> float:
+        return 1.0 + (0.15 * self._state.curriculum_level)
+
+    def _update_self_play_curriculum(self, route_score: float, fraud_score: float, retention_score: float) -> None:
+        """
+        Theme-4 core: self-improvement loop inspired by league training.
+        The policy competes against a moving challenger and environment complexity
+        scales with sustained performance.
+        """
+        self._state.recent_route_scores.append(route_score)
+        self._state.recent_fraud_scores.append(fraud_score)
+        self._state.recent_retention_scores.append(retention_score)
+        perf = (0.45 * route_score) + (0.35 * fraud_score) + (0.20 * retention_score)
+        self._state.recent_rewards.append(perf)
+
+        if not self._state.recent_rewards:
+            return
+
+        rolling_perf = float(np.mean(self._state.recent_rewards))
+        skill_delta = 0.08 * (rolling_perf - 0.5)
+        self._state.policy_skill_estimate = float(np.clip(self._state.policy_skill_estimate + skill_delta, 0.05, 0.99))
+
+        # PFSP-inspired challenger adaptation: keep matches near policy frontier.
+        gap = self._state.policy_skill_estimate - self._state.challenger_skill
+        self._state.challenger_skill = float(np.clip(self._state.challenger_skill + (0.06 * gap), 0.05, 0.99))
+
+        if self._meta_curriculum_enabled and len(self._state.recent_rewards) >= 8:
+            if rolling_perf > 0.72:
+                self._state.curriculum_level = float(np.clip(self._state.curriculum_level + 0.12, 0.0, 2.0))
+            elif rolling_perf < 0.45:
+                self._state.curriculum_level = float(np.clip(self._state.curriculum_level - 0.08, 0.0, 2.0))
 
     def step(self, action: SmartpayenvAction) -> SmartpayenvObservation:
         self._state.step_count += 1
@@ -272,6 +317,10 @@ class SmartpayenvEnvironment(Environment):
             # Inject a "Fraud Surge" pattern from logs
             surge_logs = self._log_loader.get_pattern("fraud_surge", count=5)
             self._pattern_queue.extend(surge_logs)
+
+        # Curriculum-driven stress events (self-improvement pressure).
+        if self._rng.random() < (0.01 * self._curriculum_multiplier()):
+            self._state.active_events["adversarial_shift"] = int(self._rng.integers(4, 12))
 
         for gw in self._gateways: gw.step()
 
@@ -402,14 +451,40 @@ class SmartpayenvEnvironment(Environment):
         fs = self.fraud_grader.evaluate()
         rs = self.retention_grader.evaluate()
         base_reward = (0.4 * route_score) + (0.4 * fs) + (0.2 * rs)
-        
-        # Norm punishment for chargebacks
-        final_reward = base_reward - (cb_amt / 150.0)
+
+        # League-style regret: penalize underperforming against moving challenger.
+        challenger_regret = max(0.0, self._state.challenger_skill - base_reward)
+        regret_penalty = 0.35 * challenger_regret
+
+        # Anti-gaming check: repeatedly overusing manual review without quality gains.
+        gaming_penalty = 0.0
+        if action.fraud_decision == 3 and fs < 0.55 and rs < 0.6:
+            self._state.anti_gaming_alerts += 1
+            gaming_penalty = min(0.12, 0.02 * self._state.anti_gaming_alerts)
+
+        # Curriculum bonus: reward robust performance under higher difficulty pressure.
+        robustness_bonus = 0.06 * self._state.curriculum_level * max(0.0, base_reward - 0.55)
+
+        # Norm punishment for delayed liabilities + self-improvement terms.
+        final_reward = base_reward - (cb_amt / 150.0) - regret_penalty - gaming_penalty + robustness_bonus
         self.current_obs.reward = float(np.clip(final_reward, 0.001, 0.999))
         
         self.current_obs.task_routing_score = route_score
         self.current_obs.task_fraud_mcc_score = fs
         self.current_obs.task_retention_score = rs
+        self._update_self_play_curriculum(route_score, fs, rs)
+
+        self.current_obs.metadata = {
+            "theme": "self_improvement",
+            "curriculum_level": round(self._state.curriculum_level, 4),
+            "policy_skill_estimate": round(self._state.policy_skill_estimate, 4),
+            "challenger_skill": round(self._state.challenger_skill, 4),
+            "challenger_regret": round(challenger_regret, 4),
+            "gaming_penalty": round(gaming_penalty, 4),
+            "robustness_bonus": round(robustness_bonus, 4),
+            "anti_gaming_alerts": int(self._state.anti_gaming_alerts),
+            "active_events": dict(self._state.active_events),
+        }
 
         return self.current_obs
 

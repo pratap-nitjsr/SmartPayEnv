@@ -14,7 +14,7 @@ tags:
   - Reinforcement Learning
 ---
 
-# 💳 SmartPayEnv: Advanced Fintech Reality Layer
+# 💳 SmartPayEnv: Advanced Fintech Reality Layer (Theme 4: Self-Improvement)
 
 **A high-fidelity, production-grade benchmark for training and evaluating AI Agents (LLMs/RL) on the messy reality of global payment orchestration.**
 
@@ -22,6 +22,12 @@ tags:
 [![OpenEnv Compliant](https://img.shields.io/badge/OpenEnv-Compliant-green)](https://github.com/meta-pytorch/OpenEnv)
 
 SmartPayEnv bridges the gap between simple simulations and production fintech. It models the adversarial loops, infrastructure instability, and delayed feedback cycles that define modern payment systems.
+
+This release is explicitly upgraded for **OpenEnv Hackathon Theme #4 (Self-Improvement)** with a light blend of Theme #1 and Theme #2:
+- **League-style challenger dynamics** inside the environment (agent vs moving opponent skill frontier).
+- **Adaptive curriculum** that auto-escalates pressure after sustained performance and de-escalates after regressions.
+- **Anti-reward-hacking penalties** for degenerate policies (e.g., overusing manual review without fraud/retention quality).
+- **Long-horizon credit pressure** through delayed chargebacks + review queues + temporal events.
 
 ---
 
@@ -122,6 +128,12 @@ Agents can send transactions to manual review (Action 3). Resolutions are 100% a
 - **📊 BIN-Gateway Affinity**: A hidden matrix of gateway performance across different card types. Agents must discover these affinities to optimize routing success.
 - **🧠 Preference-Based Learning (Simulation Branching)**: Supports advanced training (e.g., DPO/PPO) by allowing agents to "What-if" multiple actions from the same state via the `/simulate` endpoint. Agents can group similar contexts (BIN + Amount + Risk) and learn from relative advantages.
 
+### 5. Self-Improving Meta-Curriculum (NEW)
+- **📈 Curriculum Level**: Each episode now tracks a continuous curriculum level (0-2) that increases after sustained high rolling performance.
+- **🥊 Challenger Skill**: A moving challenger policy estimate is maintained and used to compute regret-style penalties when the active policy underperforms.
+- **🧯 Anti-Gaming Guardrails**: Repeatedly selecting costly manual review without corresponding quality gains triggers adaptive penalties.
+- **🧠 Metadata for Training**: Step metadata exposes `curriculum_level`, `policy_skill_estimate`, `challenger_skill`, and shaping terms to support richer RL diagnostics.
+
 ---
 
 ## 🎯 Benchmark Tasks
@@ -180,6 +192,22 @@ SmartPayEnv enables GRPO by providing the infrastructure for **Group Sampling** 
 - **Learnable Gradients**: Unlike binary simulations, our **Deterministic Graders** (see Scoring section) map fuzzy outcomes to continuous rewards $[0, 1]$. This prevents the "sparse reward" problem and provides stable gradients for PPO clip-range optimization.
 - **Context Bucketing**: The `server/preference_utils.py` module allows agents to bundle similar (BIN, Amount, Risk) states, enabling faster convergence on preference-based objectives.
 
+### 3. Theme-4 Group-Relative Collection (NEW)
+- Use `scripts/train_theme4_grpo.py` to build **group-relative preference pairs** from online interactions:
+  - sample action groups for each live observation
+  - rank via `/simulate` reward
+  - export best-vs-worst pairs (`theme4_grpo_pairs.jsonl`)
+- This supports novel post-training flows in **HF TRL / Unsloth** and aligns with modern critic-free RL ideas.
+
+---
+
+## 📚 Research-Inspired Design
+
+The self-improving upgrades are inspired by:
+- **League / PFSP dynamics** for avoiding cyclic overfitting and improving robustness: [AlphaStar (Nature, 2019)](https://www.nature.com/articles/s41586-019-1724-z)
+- **Group-relative policy updates** for efficient critic-free optimization: [DeepSeekMath / GRPO (arXiv:2402.03300)](https://arxiv.org/abs/2402.03300)
+- **Cross-play and equilibrium-oriented opponent diversity**: [Fictitious Cross-Play (arXiv:2310.03354)](https://arxiv.org/abs/2310.03354)
+
 ---
 
 ## 📐 Data Models
@@ -219,6 +247,9 @@ cd SmartPayEnv
 # Install dependencies
 uv sync
 
+# (Recommended) Regenerate realistic synthetic data
+python scripts/generate_logs.py --num-transactions 20000 --n-users 5000 --seed 42
+
 # Run the OpenEnv validation suite
 openenv validate
 
@@ -232,6 +263,24 @@ python tests/test_reality_features.py
 uv run -m SmartPayEnv.server.app
 ```
 Access the **Swagger UI** at `http://localhost:7860/` (auto-redirects to `/docs`).
+
+### 4. Synthetic Data World Generator (NEW)
+Use this when you want realistic, evolving "real-world-like" transaction streams:
+
+```bash
+python scripts/generate_logs.py \
+  --output data/transactions_log.jsonl \
+  --num-transactions 20000 \
+  --n-users 5000 \
+  --seed 42 \
+  --base-fraud-rate 0.08
+```
+
+What gets generated:
+- **Normal baseline behavior** (segment-based spend, location/device consistency, time-of-day effects)
+- **Seed fraud templates** (`high_value_spike`, `velocity_burst`, `geo_anomaly`, `device_spoof`, `split_transactions`)
+- **Adaptive fraud evolution** (strategy composition and stealth attacks such as `low_risk_disguise`)
+- **Strategy labels for storytelling** via `fraud_strategy` and `event_marker`
 
 ### 3. Multi-Mode Deployment (Docker)
 ```bash
