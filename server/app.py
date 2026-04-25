@@ -45,9 +45,48 @@ except (ImportError, ValueError):
     from server.SmartPayEnv_environment import SmartpayenvEnvironment
 
 
+# ── Singleton env so custom endpoints share state with openenv ─────────
+# Different openenv versions store the env in different places
+# (app.env, app.state.env, per-request factory, etc.). Rather than
+# guessing, we use a singleton subclass: no matter how many times
+# openenv instantiates the env class, it always gets the same object,
+# and we can always reach it via _SHARED_ENV.
+_SHARED_ENV: SmartpayenvEnvironment | None = None
+
+
+class SharedSmartpayenvEnvironment(SmartpayenvEnvironment):
+    """Singleton subclass — always returns the same env instance."""
+
+    def __new__(cls, *args, **kwargs):
+        global _SHARED_ENV
+        if _SHARED_ENV is None:
+            inst = super().__new__(cls)
+            super(SharedSmartpayenvEnvironment, inst).__init__(*args, **kwargs)
+            inst._singleton_initialized = True  # type: ignore[attr-defined]
+            _SHARED_ENV = inst
+        return _SHARED_ENV
+
+    def __init__(self, *args, **kwargs):  # noqa: D401
+        # Already initialised by __new__ on first construction; subsequent
+        # constructions are no-ops so we don't reset the env.
+        if getattr(self, "_singleton_initialized", False):
+            return
+        super().__init__(*args, **kwargs)
+        self._singleton_initialized = True
+
+
+def _get_env() -> SmartpayenvEnvironment:
+    """Return the shared env, creating it if openenv hasn't yet."""
+    global _SHARED_ENV
+    if _SHARED_ENV is None:
+        SharedSmartpayenvEnvironment()  # populates _SHARED_ENV
+    assert _SHARED_ENV is not None
+    return _SHARED_ENV
+
+
 # Create the app with web interface and README integration
 app = create_app(
-    SmartpayenvEnvironment,
+    SharedSmartpayenvEnvironment,
     SmartpayenvAction,
     SmartpayenvObservation,
     env_name="SmartPayEnv",
@@ -57,11 +96,8 @@ app = create_app(
 
 @app.post("/simulate", response_model=SmartpayenvObservation)
 async def simulate(action: SmartpayenvAction):
-    """
-    Simulates an action without advancing the true environment state.
-    """
-    # OpenEnv environments are stored in app.env
-    return app.env.simulate(action)
+    """Simulates an action without advancing the true environment state."""
+    return _get_env().simulate(action)
 
 
 # ── Theme-4 co-evolution endpoints ────────────────────────────────────
@@ -85,7 +121,7 @@ class SeededReset(BaseModel):
 @app.post("/configure_adversary")
 async def configure_adversary(cfg: AdversaryConfig):
     """Set the learnable fraud agent's behaviour. Returns the active config."""
-    return app.env.configure_adversary(
+    return _get_env().configure_adversary(
         intensity=cfg.intensity,
         noise_boost=cfg.noise_boost,
         pattern_rate=cfg.pattern_rate,
@@ -97,7 +133,7 @@ async def configure_adversary(cfg: AdversaryConfig):
 async def reset_seeded(req: SeededReset):
     """Deterministic reset: same `seed` => same starting trajectory.
     Useful for GRPO so all completions in a group share the same state."""
-    return app.env.reset(difficulty=int(req.difficulty), seed=req.seed)
+    return _get_env().reset(difficulty=int(req.difficulty), seed=req.seed)
 
 
 def main():
